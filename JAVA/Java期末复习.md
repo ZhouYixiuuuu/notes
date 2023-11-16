@@ -271,6 +271,7 @@ private static void foo() throws IOException, NoSuchFieldException
 * `isEmpty()` 是否为空
 * `get(i)` 获取第i个元素
 * `set(i, val)` 将第i个元素设置为val
+* `remove(idx)`将下标idx的元素删掉
 
 遍历:
 
@@ -339,7 +340,10 @@ for(Map.Entry<Integer, String> entry : map.entrySet())
 }
 ```
 
-
+* `put(key, val)` 
+* `remove(key)`
+* `get(key)`
+* `containsKey(key)` 判断是否有该键
 
 ## 文件的输入和输出
 
