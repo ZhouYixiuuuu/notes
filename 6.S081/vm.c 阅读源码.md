@@ -1,5 +1,7 @@
 # vm.c，exec.c 阅读源码
 
+https://blog.csdn.net/zzy980511/article/details/129912497
+
 ## vm.c
 
 | 函数                                                         | 使用说明                                                     | 页对齐 |
@@ -20,6 +22,8 @@
 用**软件来模拟硬件**MMU查找页表的过程，返回以pagetable为根页表，经过多级索引之后va这个虚拟地址所对应的**页表项的地址**，如果alloc != 0，则在需要时创建新的页表页，反之则不用。
 
 *walk函数返回0，只有一种情况，那就是某一级页表页在查询时发现不存在*
+
+![read vm.c-1](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312031409795.jpg)
 
 ```c
 pte_t *
@@ -66,6 +70,8 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
 ```
 
 给你一个虚拟地址，和一个物理地址，把它们两拼在一起，放在页表里面
+
+![read vm.c-2](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312031409743.jpg)
 
 ```c
 int mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
@@ -184,8 +190,6 @@ void freewalk(pagetable_t pagetable)
 }
 ```
 
-https://blog.csdn.net/zzy980511/article/details/129912497
-
 ### uvm
 
 #### uvminit
@@ -214,6 +218,8 @@ void uvminit(pagetable_t pagetable, uchar *src, uint sz)
 ##### memmove
 
 `void* memmove(void *dst, const void *src, uint n)`实现从src拷贝n个字节到dst去
+
+![read vm.c-3](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312031409125.jpg)
 
 ```c
 void*
@@ -281,6 +287,8 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 #### uvmdealloc
 
 回收用户页
+
+![read vm.c-4](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312031410268.jpg)
 
 `uint64 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)` 使得内存大小从oldzd变成newsz
 
@@ -392,6 +400,8 @@ err:
 ### copyin
 
 `int copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)` 从用户页表pagetable的虚拟地址srcva处拷贝长度为len字节的数据到地址dst
+
+![read vm.c-5](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312031410729.jpg)
 
 **在内核状态下，凡是指针变量，都会通过MMU硬件查询内核页表变成对应的物理地址。**
 
