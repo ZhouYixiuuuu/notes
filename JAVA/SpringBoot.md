@@ -168,6 +168,178 @@ public class WebConfig implements WebMvcConfigurer {
 
 ![image-20231202163013052](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312031337612.png)
 
+```java
+@RequestMapping(value = "/user/{id}", method = RequestMethod.GET)
+public String getUserById(@PathVariable int id){
+    return "根据ID获取用户";
+}
+```
+
+## Swagger 获取接口文档
+
+http://localhost:8080/swagger-ui/index.html#/
+
+```
+<dependency>
+    <groupId>org.springdoc</groupId>
+    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+    <version>2.1.0</version>
+</dependency>
+```
+
+```java
+@Configuration
+public class SpringDocConfig {
+    @Bean
+    public OpenAPI apiInfo() {
+        return new OpenAPI().info(new Info()
+                        .title("后端接口文档")
+                        .version("1.0.0")
+                );
+    }
+
+    @Bean
+    public GroupedOpenApi httpApi() {
+        return GroupedOpenApi.builder()
+                .group("http")
+                .pathsToMatch("/**")
+                .build();
+    }
+}
+```
+
+`@Operation(summary = "输入用户id获取用户信息", description = "输入用户id获取用户信息")`
+
+## MybatisPlus
+
+![image-20231204145601412](C:/Users/z1382/AppData/Roaming/Typora/typora-user-images/image-20231204145601412.png)
+
+ORM：Java对象和数据库表映射
+
+在建项目的时候，勾选`mybatis frame`和`mysql driver`
+
+```
+<dependency>
+    <groupId>com.baomidou</groupId>
+    <artifactId>mybatis-plus-boot-starter</artifactId>
+    <version>3.5.3.1</version>
+</dependency>
+<dependency>
+    <groupId>com.alibaba</groupId>
+    <artifactId>druid-spring-boot-starter</artifactId>
+    <version>1.2.16</version>
+</dependency>
+```
+
+配置数据库
+
+```
+spring.datasource.type=com.alibaba.druid.pool.DruidDataSource
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.datasource.url=jdbc:mysql://localhost:3306/user
+spring.datasource.username=root
+spring.datasource.password=12345678
+mybatis-plus.configuration.logImpl=org.apache.ibatis.logging.stdout.StdOutImpl
+mybatis-plus.configuration.mapUnderscoreToCamelCase=true 
+```
+
+```java
+//Mapper
+@Mapper
+public interface UserMapper extends BaseMapper<User> {
+}
+```
+
+```java
+//Controller
+@RestController
+public class UserController {
+    @Autowired
+    private UserMapper userMapper;
+
+    @GetMapping("/user")
+    public List<User> query(){
+        List<User> list = userMapper.selectList(null);
+        return list;
+    }
+
+    @PostMapping("/user")
+    public String insert(User user) {
+        int res = userMapper.insert(user);
+        if (res > 0) return "插入成功";
+        else return "插入失败";
+    }
+}
+```
+
+[mybatisPlus]: https://baomidou.com/pages/24112f/
+
+可以查看官网
+
+里面提供了一些注解，可以看看
+
+例如 提供表名`@TableName`
+
+```
+@TableId(type = IdType.AUTO)
+private int id;
+
+举个例子
+@PostMapping("/user")
+public String insert(User user) {
+    int res = userMapper.insert(user);
+    if (res > 0) return "插入成功";
+    else return "插入失败";
+}
+
+加上上面那个注解以后
+除了数据库的id会自增，user的id也会变化，特别是如果插入数据库之后还需要用user做些其他操作的话。
+```
+
+```java
+//多表查询
+@Select("select * from usertable")
+    @Results(
+            {
+                    @Result(column = "id", property = "id"),
+                    @Result(column = "nickname", property = "nickname"),
+                    @Result(column = "password", property = "password"),
+                    @Result(column = "id", property = "orders",javaType = List.class,
+                    many = @Many(select = "com.example.sqltest.mapper.OrderMapper.selectOrderByUid"))
+            }
+    )
+    List<User> selectAllUsersAndOrders();
+```
+
+条件查询可以使用`QueryWrapper`在官网查询使用
+
+分页查询 
+
+1. 配置一下
+
+```java
+@Configuration
+public class MyBatisPlusConfig {
+    @Bean
+    MybatisPlusInterceptor mybatisPlusInterceptor() {
+        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+        return interceptor;
+    }
+}
+```
+
+2. 进行查询
+
+```java
+@GetMapping("/user/findByPage")
+public IPage findByPage() {
+    Page<User> page = new Page<>(0, 2);
+    IPage ipage = userMapper.selectPage(page, null);
+    return ipage;
+}
+```
+
 
 
 ## 状态码
