@@ -293,3 +293,112 @@ sret
 3. 将权限模式设置为`sstatus`中的SPP位，这在`usertrapret`中也已经设置好了，0表示返回用户模式
 4. 将`sstatus`中SIE位的值设置为SPIE，在`usertrapret`中SPIE被设置为1表示开启中断
 5. 最后将`sstatus`中的SPP置为0，SPIE置为1
+
+## Lab4 Traps
+
+### RISC-V assembly
+
+1. 在a0-a7中存放参数，13存在a2中
+
+2. 编译器优化之后没有进行函数调用
+
+3. 在0x630
+
+4. 0x38
+
+5. HE110 World
+   x = 3, y = 1
+
+   因此y=后面打印的结果取决于之前a2中保存的数据
+
+### Backtrace
+
+```c
+void backtrace()
+{
+  //获取当前正在执行的函数的帧指针
+  uint64 fp = r_fp();
+  printf("backtrace:\n");
+  //没到当前帧的最顶端，就一直往上走
+  while (fp < PGROUNDUP(fp))
+  {
+    uint64 ra = *(uint64 *)(fp - 8);
+    fp = *(uint64 *)(fp - 16);
+    printf("%p\n", ra);
+  }
+}
+```
+
+![image-20231208162238093](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312081622829.png)
+
+### Alarm
+
+每当程序消耗了CPU时间达到n个“滴答”，内核应当使应用程序函数`fn`被调用。
+
+在XV6中，一个滴答是一段相当任意的时间单元，取决于硬件计时器生成中断的频率。
+
+添加两个系统调用
+
+1.  `sigalarm(interval, handler)` 主要起到一个初始化的作用，就是将滴答的个数和需要被调用的函数，放到进程结构体里面去
+2. **每一个滴答声，硬件时钟就会强制一个中断，这个中断在kernel/trap.c\中的`usertrap()`中处理。**
+3. 那么我们的思路就是：在进程结构体里面设置一个cnt记录距离上次调用`handler`过了多少个滴答了，如果过了`sigalarm`函数规定的滴答数，就调用`handler`，并把cnt置为0
+4. 在调用完`handler`之后，我们还要继续执行原函数，所以在执行`handler`之前，需要把此刻的`p->trapframe`存下来，调用完`handler`再变回去。
+5. 变回去就是在`sigreturn`函数中进行
+6. 防止对处理程序的重复调用——如果处理程序还没有返回，内核就不应该再次调用它。设置一个`Inhandler`变量，判断发生中断时，是否正处于`handler`函数中，防止重复调用`handler`函数。
+
+```c
+uint64 sys_sigalarm(void)
+{
+  if (argint(0, &myproc()->ticks) < 0) return -1;
+  if (argaddr(1, &myproc()->handler) < 0) return -1;
+  //printf("%p\n", myproc()->handler);
+  return 0;
+}
+```
+
+```c
+  // give up the CPU if this is a timer interrupt.
+  if (which_dev == 2)
+  {
+    if (p->ticks != 0 && p->Inhandler == 0)
+    {
+      p->ticks_cnt++;
+      if (p->ticks_cnt == p->ticks)
+      {
+        // 调用函数handler
+        memmove(p->alermframe, p->trapframe, sizeof(struct trapframe));
+        p->trapframe->epc = p->handler;
+        p->Inhandler = 1;
+        p->ticks_cnt = 0;
+      }
+    }
+    yield();
+  }
+```
+
+```c
+uint64 sys_sigreturn(void)
+{
+  struct proc * p = myproc();
+  p->Inhandler = 0;
+  memmove(p->trapframe, p->alermframe, sizeof(struct trapframe));
+  return 0;
+}
+```
+
+![image-20231208163528848](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312081635516.png)
+
+需要注意的几个点：
+
+1. 系统调用的参数在哪里获得？在寄存器啊，不要弄错了。
+
+2. 学会使用`memmove`函数，进行内存的复制
+
+3. ```c
+   memmove(p->alermframe, p->trapframe, sizeof(struct trapframe));
+   p->trapframe->epc = p->handler;
+   ```
+
+   这两行的先后顺序不能写错！
+
+![image-20231208161709433](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312081617182.png)

@@ -70,6 +70,8 @@ public String hello(String nickname) {
 }
 ```
 
+![image-20231209172631996](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312091726374.png)
+
 ## 静态资源的访问
 
 在static目录下放一张静态图片，访问`localhost:8080/test.jpg`就可以直接访问
@@ -218,27 +220,27 @@ ORM：Java对象和数据库表映射
 
 在建项目的时候，勾选`mybatis frame`和`mysql driver`
 
-```
-<dependency>
-    <groupId>com.baomidou</groupId>
-    <artifactId>mybatis-plus-boot-starter</artifactId>
-    <version>3.5.3.1</version>
-</dependency>
-<dependency>
-    <groupId>com.alibaba</groupId>
-    <artifactId>druid-spring-boot-starter</artifactId>
-    <version>1.2.16</version>
-</dependency>
-```
+[Maven仓库地址]: https://mvnrepository.com/
+[Mybatis-Plus官网]: https://baomidou.com/pages/24112f/
+
+在pom.xml文件中添加依赖：
+
+- Spring Boot Starter JDBC
+- Project Lombok
+- MySQL Connector/J
+- mybatis-plus-boot-starter
+- mybatis-plus-generator
 
 配置数据库
 
-```
-spring.datasource.type=com.alibaba.druid.pool.DruidDataSource
+```properties
 spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
 spring.datasource.url=jdbc:mysql://localhost:3306/user
+//
+spring.datasource.url=jdbc:mysql://localhost:3306/user?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8
 spring.datasource.username=root
 spring.datasource.password=12345678
+spring.datasource.type=com.alibaba.druid.pool.DruidDataSource
 mybatis-plus.configuration.logImpl=org.apache.ibatis.logging.stdout.StdOutImpl
 mybatis-plus.configuration.mapUnderscoreToCamelCase=true 
 ```
@@ -272,7 +274,19 @@ public class UserController {
 }
 ```
 
-[mybatisPlus]: https://baomidou.com/pages/24112f/
+```java
+//entity
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class User {
+    private Integer id;
+    private String nickname;
+    private String password;
+}
+```
+
+
 
 可以查看官网
 
@@ -340,7 +354,139 @@ public IPage findByPage() {
 }
 ```
 
+## JWT验证
 
+![image-20231211113713169](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312111137095.png)
+
+![image-20231212091128562](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312120911284.png)
+
+添加依赖
+
+- spring-boot-starter-security
+- jjwt-api
+- jjwt-impl
+- jjwt-jackson
+
+工具类
+
+`utils.JwtUtil`类
+
+```java
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtBuilder;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import org.springframework.stereotype.Component;
+
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
+import java.util.Date;
+import java.util.UUID;
+
+@Component
+public class JwtUtil {
+    public static final long JWT_TTL = 60 * 60 * 1000L * 24 * 14;  // 有效期14天
+    public static final String JWT_KEY = "SDFGjhdsfalshdfHFdsjkdsfds121232131afasdfac";
+
+    public static String getUUID() {
+        return UUID.randomUUID().toString().replaceAll("-", "");
+    }
+
+    public static String createJWT(String subject) {
+        JwtBuilder builder = getJwtBuilder(subject, null, getUUID());
+        return builder.compact();
+    }
+
+    private static JwtBuilder getJwtBuilder(String subject, Long ttlMillis, String uuid) {
+        SignatureAlgorithm signatureAlgorithm = SignatureAlgorithm.HS256;
+        SecretKey secretKey = generalKey();
+        long nowMillis = System.currentTimeMillis();
+        Date now = new Date(nowMillis);
+        if (ttlMillis == null) {
+            ttlMillis = JwtUtil.JWT_TTL;
+        }
+
+        long expMillis = nowMillis + ttlMillis;
+        Date expDate = new Date(expMillis);
+        return Jwts.builder()
+                .setId(uuid)
+                .setSubject(subject)
+                .setIssuer("sg")
+                .setIssuedAt(now)
+                .signWith(signatureAlgorithm, secretKey)
+                .setExpiration(expDate);
+    }
+
+    public static SecretKey generalKey() {
+        byte[] encodeKey = Base64.getDecoder().decode(JwtUtil.JWT_KEY);
+        return new SecretKeySpec(encodeKey, 0, encodeKey.length, "HmacSHA256");
+    }
+
+    public static Claims parseJWT(String jwt) throws Exception {
+        SecretKey secretKey = generalKey();
+        return Jwts.parserBuilder()
+                .setSigningKey(secretKey)
+                .build()
+                .parseClaimsJws(jwt)
+                .getBody();
+    }
+}
+```
+
+
+
+## 部署到服务器
+
+1. 组一台服务器
+
+2. 设置安全组，把端口开了，包括后端项目的端口/http/https
+
+3.  `git bash` 设置ssh远程登录服务器，将ip放在`.ssh/config`里面
+
+   通过`ssh-copy-id myserver ` 设置免密登录
+
+1. 安装mysql：`sudo apt-get install mysql-server`
+
+   启动mysql：`sudo service mysql start`
+
+   进入mysql：`sudo mysql -u root`
+
+   设置mysql密码：`ALTER USER 'root'@'%' IDENTIFIED WITH caching_sha2_password BY '12345678';`
+
+2. 安装jdk：`sudo apt-get install openjdk-17-jdk`
+
+3. 打包后端
+
+   * 在`pom.xml`中添加配置
+
+     ```
+     <build>
+         <plugins>
+             <plugin>
+                 <groupId>org.springframework.boot</groupId>
+                 <artifactId>spring-boot-maven-plugin</artifactId>
+                 <!--这里写上main方法所在类的路径-->
+                 <configuration>
+                     <mainClass>com.kob.backend.BackendApplication</mainClass>
+                 </configuration>
+                 <executions>
+                     <execution>
+                         <goals>
+                             <goal>repackage</goal>
+                         </goals>
+                     </execution>
+                 </executions>
+             </plugin>
+         </plugins>
+     </build>
+     ```
+
+   * 添加多一句 `<packaging>jar</packaging>`
+
+4. 在maven里面，点开项目，点击`clean`，点击`package`，在target目录下找到jar包，放到服务器里面去 `scp xxxxx.jar Ali-server:`
+
+5. `java -jar xxxxx.jar`运行后端项目 记得使用tmux
 
 ## 状态码
 
@@ -353,3 +499,7 @@ public IPage findByPage() {
 4xx：客户端错误
 
 5xx：服务器错误
+
+
+
+select * from article where authorID in (select followedId from follow where userId = #{userId})
