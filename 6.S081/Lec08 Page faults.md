@@ -6,6 +6,12 @@
 2. 出错的原因（**存在SCAUSE寄存器中**，这个寄存器保存了trap机制中进入内核态的原因）
 3. 触发page fault的指令的位置（修复完page fault，可以继续执行）（**存在SEPC寄存器中**）
 
+
+
+sbrk->eager alloration
+
+申请多于自己所需的内存，进程的内容会消耗很多
+
 ## lazy allocation
 
 eager allocation：应用程序很难预测自己需要多少内存，所以会申请多于自己需要的内存，有些内存就会浪费。
@@ -49,7 +55,7 @@ BSS区域里面可能有好几个page，里面初始化都是0，那么我只需
 
 ![image-20231218112324127](https://raw.githubusercontent.com/ZhouYixiuuuu/picture/master/imgs/202312181123622.png)
 
-所有的映射，不能对这个物理page进行写操作，不然就会修改它的全0。
+所有的映射，不能对这个物理page进行**写操作**，不然就会修改它的全0。
 
 当应用程序想修改这个page时，会得到一个page fault，那就重新建一个page，更新这个page的映射关系。
 
