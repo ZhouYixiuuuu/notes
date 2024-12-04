@@ -3,19 +3,31 @@
 ## 编译
 `sudo make static_lib -j 8`
 
-编译文件rocksdb_demo
+### 编译文件rocksdb_demo
 
 ```
 g++ -std=c++17 rocksdb_demo.cpp -o rocksdb_demo librocksdb.a -I ./include -lpthread -ldl -lgflags -lz -lbz2 -lsnappy -llz4 -lzstd
 ```
 
-下面是使用db_bench
+### 使用db_bench
 ```
 export PORTABLE=1
 export CXXFLAGS=-fPIC
+make clean
 make db_bench
 ./db_bench --benchmarks=fillseq
 ```
+
+使用load-gen
+
+```
+cd ../../K-V-Workload-Generator/ && ./load_gen -I1000000 -U1000000 -Q50000
+cp workload.txt ../examples/__working_branch/ 
+
+cd ../examples/__working_branch/ && make && ./working_version
+```
+
+
 
 ## 事务
 
@@ -234,7 +246,7 @@ void DBImpl::BGWorkCompaction(void* arg) {
 
 下面看看BackgroundCallCompaction，这个函数主要用于调度compaction任务，在compaction过程中遇到错误，能够正确地处理这些错误。记录compaction执行情况和错误信息，在compaction任务完成之后，识别并删除不再需要的临时文件，以释放存储空间。
 
-下一个函数，调用BackgrouondCompaction，这是最重要的函数了！
+下一个函数，调用BackgroundCompaction，这是最重要的函数了！
 
 先看一下里面的PickCompaction函数：
 
@@ -277,7 +289,9 @@ Compaction* LevelCompactionBuilder::PickCompaction() {
 
 先看第一个SetupInitialFiles函数：void LevelCompactionBuilder::SetupInitialFiles() 
 
+BackgroundCompaction：
 
+里面有edit()->DeleteFile将文件从旧一层中删除。
 
 
 
@@ -593,5 +607,589 @@ bool for_compaction = caller == TableReaderCaller::kCompaction;
       table_reader = cache_.Value(handle);
     }
   }
+```
+
+
+
+
+
+## db_bench
+
+```
+./db_bench --benchmarks=fillseq,stats --num=2314099 --compression_type=none --compaction_style=0
+
+./db_bench --benchmarks=fillrandom,stats --num=4628198 --compression_type=none --max_bytes_for_level_multiplier=2 --compaction_style=0
+
+./db_bench --benchmarks="overwrite,stats" --use_existing_db=true
+```
+
+![image-20241126104252298](C:/Users/z1382/AppData/Roaming/Typora/typora-user-images/image-20241126104252298.png)
+
+https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide
+
+level_compaction_dynamic_level_bytes：
+
+* true：
+
+一共有几种不同的Compaction策略：
+
+* Full：?? 待实现？？？rocksdb没有实现~~
+
+  ```
+  // 每张sstable大小都一样
+  ./db_bench --benchmarks=fillrandom,stats --num=4628198 --compression_type=none --max_bytes_for_level_multiplier=2 --compaction_style=0 
+  ```
+
+  
+
+* LO+1：
+
+  compaction_pri默认是3
+
+  ```c++
+  enum CompactionPri : char {
+    // Slightly prioritize larger files by size compensated by #deletes
+    kByCompensatedSize = 0x0,
+    // First compact files whose data's latest update time is oldest.
+    // Try this if you only update some hot keys in small ranges.
+    kOldestLargestSeqFirst = 0x1,
+    // First compact files whose range hasn't been compacted to the next level
+    // for the longest. If your updates are random across the key space,
+    // write amplification is slightly better with this option.
+    kOldestSmallestSeqFirst = 0x2,
+    // First compact files whose ratio between overlapping size in next level
+    // and its size is the smallest. It in many cases can optimize write
+    // amplification.
+    // Files marked for compaction will be prioritized over files that are not
+    // marked.
+    kMinOverlappingRatio = 0x3,
+    // Keeps a cursor(s) of the successor of the file (key range) was/were
+    // compacted before, and always picks the next files (key range) in that
+    // level. The file picking process will cycle through all the files in a
+    // round-robin manner.
+    kRoundRobin = 0x4,
+  };
+  ```
+
+  
+
+  ```
+  ./db_bench --benchmarks=fillrandom,stats --num=4628198 --compaction_style=0 --compaction_pri=3 --max_bytes_for_level_multiplier=2
+  ```
+
+  
+
+* Cold：
+
+  ```
+  ./db_bench --benchmarks=fillrandom,stats --num=4628198 --compaction_style=0 --compaction_pri=1 --max_bytes_for_level_multiplier=2
+  ```
+
+  
+
+* Old：
+
+  ```
+  ./db_bench --benchmarks=fillrandom,stats --num=4628198 --compaction_style=0 --compaction_pri=2 --max_bytes_for_level_multiplier=2
+  ```
+
+  
+
+* TSD：
+
+  NewCompactOnDeletionCollectorFactory(kWindowSize, kNumDelsTrigger)
+
+  * `sliding_window_size "N"`：这是一个滑动窗口的大小，用于检查连续的条目。如果在这个窗口中发现足够的删除条目，就会触发压缩。注意，这个数值会被向上取整到不小于指定大小的最小的128的倍数。
+  * `deletion_trigger "D"`：这是触发压缩的删除条目的最小数量。即使改变了N的值，D的指定数量也不会改变。
+  * `deletion_ratio`：这是一个比率阈值，用于基于墓碑条目的比例触发压缩。如果这个值小于或等于0，或者大于1，则基于删除比率的压缩触发会被禁用。默认情况下是禁用的。
+
+  ```
+  ./db_bench --benchmarks=fillrandom,stats --num=4628198 --compaction_style=0 --compaction_pri=0 --max_bytes_for_level_multiplier=2 
+  ```
+
+  使用 kByCompensatedSize 策略时，RocksDB 会优先选择包含较多 tombstone(删除标记)的文件进行 compaction。具体逻辑是:
+
+  1. 计算每个文件的 compensated file size:
+
+  - compensated_file_size = 实际文件大小 + (删除数量 - 插入数量) * 某个因子
+
+  1. 当一个文件中删除数量超过插入数量时:
+
+  - compensated_file_size 会变大
+  - 该文件被选中进行 compaction 的优先级就会提高
+
+  1. 删除数量比插入数量超出越多:
+
+  - compensated_file_size 越大
+  - 被选中的优先级越高
+
+* RR：
+
+  ```
+  ./db_bench --benchmarks=fillrandom,stats --num=4628198 --compaction_style=0 --compaction_pri=4 --max_bytes_for_level_multiplier=2
+  ```
+
+  
+
+* LO+2
+
+* TSA
+
+* Tier：
+
+
+
+## 复制sstable
+
+```c++
+Status TableCache::GetTableReader(
+    const ReadOptions& ro, const FileOptions& file_options,
+    const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
+    bool sequential_mode, bool record_read_stats, HistogramImpl* file_read_hist,
+    std::unique_ptr<TableReader>* table_reader,
+    const SliceTransform* prefix_extractor, bool skip_filters, int level,
+    bool prefetch_index_and_filter_in_cache,
+    size_t max_file_size_for_l0_meta_pin) {
+  std::string fname =
+      TableFileName(ioptions_.cf_paths, fd.GetNumber(), fd.GetPathId());
+  std::unique_ptr<FSRandomAccessFile> file;
+  FileOptions fopts = file_options;
+  Status s = PrepareIOFromReadOptions(ro, ioptions_.env, fopts.io_options);
+  if (s.ok()) {
+    s = ioptions_.fs->NewRandomAccessFile(fname, fopts, &file, nullptr);
+  }
+  RecordTick(ioptions_.statistics, NO_FILE_OPENS);
+  if (s.IsPathNotFound()) {
+    fname = Rocks2LevelTableFileName(fname);
+    s = PrepareIOFromReadOptions(ro, ioptions_.env, fopts.io_options);
+    if (s.ok()) {
+      s = ioptions_.fs->NewRandomAccessFile(fname, file_options, &file,
+                                            nullptr);
+    }
+    RecordTick(ioptions_.statistics, NO_FILE_OPENS);
+  }
+
+  if (s.ok()) {
+    if (!sequential_mode && ioptions_.advise_random_on_open) {
+      file->Hint(FSRandomAccessFile::kRandom);
+    }
+    StopWatch sw(ioptions_.env, ioptions_.statistics, TABLE_OPEN_IO_MICROS);
+    std::unique_ptr<RandomAccessFileReader> file_reader(
+        new RandomAccessFileReader(
+            std::move(file), fname, ioptions_.env,
+            record_read_stats ? ioptions_.statistics : nullptr, SST_READ_MICROS,
+            file_read_hist, ioptions_.rate_limiter, ioptions_.listeners));
+    s = ioptions_.table_factory->NewTableReader(
+        ro,
+        TableReaderOptions(ioptions_, prefix_extractor, file_options,
+                           internal_comparator, skip_filters, immortal_tables_,
+                           false /* force_direct_prefetch */, level,
+                           fd.largest_seqno, block_cache_tracer_,
+                           max_file_size_for_l0_meta_pin),
+        std::move(file_reader), fd.GetFileSize(), table_reader,
+        prefetch_index_and_filter_in_cache);
+    TEST_SYNC_POINT("TableCache::GetTableReader:0");
+  }
+  return s;
+}
+```
+
+
+
+
+
+```c++
+Status CompactionJob::OpenCompactionOutputFile(
+    SubcompactionState* sub_compact) {
+  assert(sub_compact != nullptr);
+  assert(sub_compact->builder == nullptr);
+  // no need to lock because VersionSet::next_file_number_ is atomic
+  uint64_t file_number = versions_->NewFileNumber();
+  std::string fname =
+      TableFileName(sub_compact->compaction->immutable_cf_options()->cf_paths,
+                    file_number, sub_compact->compaction->output_path_id());
+  // Fire events.
+  ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
+#ifndef ROCKSDB_LITE
+  EventHelpers::NotifyTableFileCreationStarted(
+      cfd->ioptions()->listeners, dbname_, cfd->GetName(), fname, job_id_,
+      TableFileCreationReason::kCompaction);
+#endif  // !ROCKSDB_LITE
+  // Make the output file
+  std::unique_ptr<FSWritableFile> writable_file;
+#ifndef NDEBUG
+  bool syncpoint_arg = file_options_.use_direct_writes;
+  TEST_SYNC_POINT_CALLBACK("CompactionJob::OpenCompactionOutputFile",
+                           &syncpoint_arg);
+#endif
+  Status s;
+  IOStatus io_s =
+      NewWritableFile(fs_.get(), fname, &writable_file, file_options_);
+  s = io_s;
+  if (sub_compact->io_status.ok()) {
+    sub_compact->io_status = io_s;
+  }
+  if (!s.ok()) {
+    ROCKS_LOG_ERROR(
+        db_options_.info_log,
+        "[%s] [JOB %d] OpenCompactionOutputFiles for table #%" PRIu64
+        " fails at NewWritableFile with status %s",
+        sub_compact->compaction->column_family_data()->GetName().c_str(),
+        job_id_, file_number, s.ToString().c_str());
+    LogFlush(db_options_.info_log);
+    EventHelpers::LogAndNotifyTableFileCreationFinished(
+        event_logger_, cfd->ioptions()->listeners, dbname_, cfd->GetName(),
+        fname, job_id_, FileDescriptor(), kInvalidBlobFileNumber,
+        TableProperties(), TableFileCreationReason::kCompaction, s);
+    return s;
+  }
+
+  // Try to figure out the output file's oldest ancester time.
+  int64_t temp_current_time = 0;
+  auto get_time_status = env_->GetCurrentTime(&temp_current_time);
+  // Safe to proceed even if GetCurrentTime fails. So, log and proceed.
+  if (!get_time_status.ok()) {
+    ROCKS_LOG_WARN(db_options_.info_log,
+                   "Failed to get current time. Status: %s",
+                   get_time_status.ToString().c_str());
+  }
+  uint64_t current_time = static_cast<uint64_t>(temp_current_time);
+  uint64_t oldest_ancester_time =
+      sub_compact->compaction->MinInputFileOldestAncesterTime();
+  if (oldest_ancester_time == port::kMaxUint64) {
+    oldest_ancester_time = current_time;
+  }
+
+  // Initialize a SubcompactionState::Output and add it to sub_compact->outputs
+  {
+    SubcompactionState::Output out;
+    out.meta.fd = FileDescriptor(file_number,
+                                 sub_compact->compaction->output_path_id(), 0);
+    out.meta.oldest_ancester_time = oldest_ancester_time;
+    out.meta.file_creation_time = current_time;
+    out.finished = false;
+    out.paranoid_hash = 0;
+    sub_compact->outputs.push_back(out);
+  }
+
+  writable_file->SetIOPriority(Env::IOPriority::IO_LOW);
+  writable_file->SetWriteLifeTimeHint(write_hint_);
+  writable_file->SetPreallocationBlockSize(static_cast<size_t>(
+      sub_compact->compaction->OutputFilePreallocationSize()));
+  const auto& listeners =
+      sub_compact->compaction->immutable_cf_options()->listeners;
+  sub_compact->outfile.reset(
+      new WritableFileWriter(std::move(writable_file), fname, file_options_,
+                             env_, db_options_.statistics.get(), listeners,
+                             db_options_.file_checksum_gen_factory.get()));
+
+  // If the Column family flag is to only optimize filters for hits,
+  // we can skip creating filters if this is the bottommost_level where
+  // data is going to be found
+  bool skip_filters =
+      cfd->ioptions()->optimize_filters_for_hits && bottommost_level_;
+
+  sub_compact->builder.reset(NewTableBuilder(
+      *cfd->ioptions(), *(sub_compact->compaction->mutable_cf_options()),
+      cfd->internal_comparator(), cfd->int_tbl_prop_collector_factories(),
+      cfd->GetID(), cfd->GetName(), sub_compact->outfile.get(),
+      sub_compact->compaction->output_compression(),
+      0 /*sample_for_compression */,
+      sub_compact->compaction->output_compression_opts(),
+      sub_compact->compaction->output_level(), skip_filters,
+      oldest_ancester_time, 0 /* oldest_key_time */,
+      sub_compact->compaction->max_output_file_size(), current_time, db_id_,
+      db_session_id_));
+  LogFlush(db_options_.info_log);
+  return s;
+}
+```
+
+
+
+```
+const std::string kGood = "this is a good string, synced to disk";
+  const std::string kCorrupted = "this part may be corrupted";
+  const std::string kFileName = "/dir/f";
+  std::unique_ptr<WritableFile> writable_file;
+  ASSERT_OK(env_->NewWritableFile(kFileName, &writable_file, soptions_));
+  ASSERT_OK(writable_file->Append(kGood));
+  ASSERT_TRUE(writable_file->GetFileSize() == kGood.size());
+
+  std::string scratch;
+  scratch.resize(kGood.size() + kCorrupted.size() + 16);
+  Slice result;
+  std::unique_ptr<RandomAccessFile> rand_file;
+  ASSERT_OK(env_->NewRandomAccessFile(kFileName, &rand_file, soptions_));
+  ASSERT_OK(rand_file->Read(0, kGood.size(), &result, &(scratch[0])));
+  ASSERT_EQ(result.compare(kGood), 0);
+
+  // Sync + corrupt => no change
+  ASSERT_OK(writable_file->Fsync());
+  ASSERT_OK(dynamic_cast<MockEnv*>(env_)->CorruptBuffer(kFileName));
+  result.clear();
+  ASSERT_OK(rand_file->Read(0, kGood.size(), &result, &(scratch[0])));
+  ASSERT_EQ(result.compare(kGood), 0);
+```
+
+
+
+有没有什么办法，通过FileMetaData或者FileMetaData.fileDescription获取table_properties呢？？
+
+下面这段参考一下？？GetTableProperties这个函数
+
+```c++
+void DBImpl::BuildCompactionJobInfo(
+    const ColumnFamilyData* cfd, Compaction* c, const Status& st,
+    const CompactionJobStats& compaction_job_stats, const int job_id,
+    const Version* current, CompactionJobInfo* compaction_job_info) const {
+  assert(compaction_job_info != nullptr);
+  compaction_job_info->cf_id = cfd->GetID();
+  compaction_job_info->cf_name = cfd->GetName();
+  compaction_job_info->status = st;
+  compaction_job_info->thread_id = env_->GetThreadID();
+  compaction_job_info->job_id = job_id;
+  compaction_job_info->base_input_level = c->start_level();
+  compaction_job_info->output_level = c->output_level();
+  compaction_job_info->stats = compaction_job_stats;
+  compaction_job_info->table_properties = c->GetOutputTableProperties();
+  compaction_job_info->compaction_reason = c->compaction_reason();
+  compaction_job_info->compression = c->output_compression();
+  for (size_t i = 0; i < c->num_input_levels(); ++i) {
+    for (const auto fmd : *c->inputs(i)) {
+      const FileDescriptor& desc = fmd->fd;
+      const uint64_t file_number = desc.GetNumber();
+      auto fn = TableFileName(c->immutable_cf_options()->cf_paths, file_number,
+                              desc.GetPathId());
+      compaction_job_info->input_files.push_back(fn);
+      compaction_job_info->input_file_infos.push_back(CompactionFileInfo{
+          static_cast<int>(i), file_number, fmd->oldest_blob_file_number});
+      if (compaction_job_info->table_properties.count(fn) == 0) {
+        std::shared_ptr<const TableProperties> tp;
+        auto s = current->GetTableProperties(&tp, fmd, &fn);
+        if (s.ok()) {
+          compaction_job_info->table_properties[fn] = tp;
+        }
+      }
+    }
+  }
+  for (const auto& newf : c->edit()->GetNewFiles()) {
+    const FileMetaData& meta = newf.second;
+    const FileDescriptor& desc = meta.fd;
+    const uint64_t file_number = desc.GetNumber();
+    compaction_job_info->output_files.push_back(TableFileName(
+        c->immutable_cf_options()->cf_paths, file_number, desc.GetPathId()));
+    compaction_job_info->output_file_infos.push_back(CompactionFileInfo{
+        newf.first, file_number, meta.oldest_blob_file_number});
+  }
+}
+```
+
+
+
+
+
+参加一下，不知道能不能用
+
+```
+void DBTestBase::CopyFile(const std::string& source,
+                          const std::string& destination, uint64_t size) {
+  const EnvOptions soptions;
+  std::unique_ptr<SequentialFile> srcfile;
+  ASSERT_OK(env_->NewSequentialFile(source, &srcfile, soptions));
+  std::unique_ptr<WritableFile> destfile;
+  ASSERT_OK(env_->NewWritableFile(destination, &destfile, soptions));
+
+  if (size == 0) {
+    // default argument means copy everything
+    ASSERT_OK(env_->GetFileSize(source, &size));
+  }
+
+  char buffer[4096];
+  Slice slice;
+  while (size > 0) {
+    uint64_t one = std::min(uint64_t(sizeof(buffer)), size);
+    ASSERT_OK(srcfile->Read(one, &slice, buffer));
+    ASSERT_OK(destfile->Append(slice));
+    size -= slice.size();
+  }
+  ASSERT_OK(destfile->Close());
+}
+```
+
+
+
+还有一个，参考一下：
+
+```c++
+IOStatus CopyFile(FileSystem* fs, const std::string& source,
+                  const std::string& destination, uint64_t size,
+                  bool use_fsync) {
+  const FileOptions soptions;
+  IOStatus io_s;
+  std::unique_ptr<SequentialFileReader> src_reader;
+  std::unique_ptr<WritableFileWriter> dest_writer;
+
+  {
+    std::unique_ptr<FSSequentialFile> srcfile;
+    io_s = fs->NewSequentialFile(source, soptions, &srcfile, nullptr);
+    if (!io_s.ok()) {
+      return io_s;
+    }
+    std::unique_ptr<FSWritableFile> destfile;
+    io_s = fs->NewWritableFile(destination, soptions, &destfile, nullptr);
+    if (!io_s.ok()) {
+      return io_s;
+    }
+
+    if (size == 0) {
+      // default argument means copy everything
+      io_s = fs->GetFileSize(source, IOOptions(), &size, nullptr);
+      if (!io_s.ok()) {
+        return io_s;
+      }
+    }
+    src_reader.reset(new SequentialFileReader(std::move(srcfile), source));
+    dest_writer.reset(
+        new WritableFileWriter(std::move(destfile), destination, soptions));
+  }
+
+  char buffer[4096];
+  Slice slice;
+  while (size > 0) {
+    size_t bytes_to_read = std::min(sizeof(buffer), static_cast<size_t>(size));
+    io_s = status_to_io_status(src_reader->Read(bytes_to_read, &slice, buffer));
+    if (!io_s.ok()) {
+      return io_s;
+    }
+    if (slice.size() == 0) {
+      return IOStatus::Corruption("file too small");
+    }
+    io_s = dest_writer->Append(slice);
+    if (!io_s.ok()) {
+      return io_s;
+    }
+    size -= slice.size();
+  }
+  return dest_writer->Sync(use_fsync);
+}
+
+extern IOStatus CopyFile(FileSystem* fs, const std::string& source,
+                         const std::string& destination, uint64_t size,
+                         bool use_fsync);  // 感觉可以直接引用？？？
+// 用法示例
+return CopyFile(db_->GetFileSystem(), src_dirname + fname,
+                          full_private_path + fname, size_limit_bytes,
+                          db_options.use_fsync);
+```
+
+
+
+删文件的函数。。
+
+```
+ASSERT_OK(env_->DeleteFile(fpath));
+```
+
+
+
+输入一个FileMetaData，返回一个FileMetaData
+
+如何根据FileMetaData获知sstable的数据，比如data size？index size？或者将整个sstable变成纠删码？？
+
+抄一下！！
+
+```c++
+Status SstFileDumper::GetTableReader(const std::string& file_path) {
+  // Warning about 'magic_number' being uninitialized shows up only in UBsan
+  // builds. Though access is guarded by 's.ok()' checks, fix the issue to
+  // avoid any warnings.
+  uint64_t magic_number = Footer::kInvalidTableMagicNumber;
+
+  // read table magic number
+  Footer footer;
+
+  std::unique_ptr<RandomAccessFile> file;
+  uint64_t file_size = 0;
+  Status s = options_.env->NewRandomAccessFile(file_path, &file, soptions_);
+  if (s.ok()) {
+    s = options_.env->GetFileSize(file_path, &file_size);
+  }
+
+  // check empty file
+  // if true, skip further processing of this file
+  if (file_size == 0) {
+    return Status::Aborted(file_path, "Empty file");
+  }
+
+  file_.reset(new RandomAccessFileReader(NewLegacyRandomAccessFileWrapper(file),
+                                         file_path));
+
+  FilePrefetchBuffer prefetch_buffer(nullptr, 0, 0, true /* enable */,
+                                     false /* track_min_offset */);
+  if (s.ok()) {
+    const uint64_t kSstDumpTailPrefetchSize = 512 * 1024;
+    uint64_t prefetch_size = (file_size > kSstDumpTailPrefetchSize)
+                                 ? kSstDumpTailPrefetchSize
+                                 : file_size;
+    uint64_t prefetch_off = file_size - prefetch_size;
+    IOOptions opts;
+    prefetch_buffer.Prefetch(opts, file_.get(), prefetch_off,
+                             static_cast<size_t>(prefetch_size));
+
+    s = ReadFooterFromFile(opts, file_.get(), &prefetch_buffer, file_size,
+                           &footer);
+  }
+  if (s.ok()) {
+    magic_number = footer.table_magic_number();
+  }
+
+  if (s.ok()) {
+    if (magic_number == kPlainTableMagicNumber ||
+        magic_number == kLegacyPlainTableMagicNumber) {
+      soptions_.use_mmap_reads = true;
+      options_.env->NewRandomAccessFile(file_path, &file, soptions_);
+      file_.reset(new RandomAccessFileReader(
+          NewLegacyRandomAccessFileWrapper(file), file_path));
+    }
+    options_.comparator = &internal_comparator_;
+    // For old sst format, ReadTableProperties might fail but file can be read
+    if (ReadTableProperties(magic_number, file_.get(), file_size,
+                            (magic_number == kBlockBasedTableMagicNumber)
+                                ? &prefetch_buffer
+                                : nullptr)
+            .ok()) {
+      SetTableOptionsByMagicNumber(magic_number);
+    } else {
+      SetOldTableOptions();
+    }
+  }
+
+  if (s.ok()) {
+    s = NewTableReader(ioptions_, soptions_, internal_comparator_, file_size,
+                       &table_reader_);
+  }
+  return s;
+}
+```
+
+
+
+在copyfile的时候，会将file放进versionstorageInfo里面吗？？？
+
+
+
+## Direte IO
+
+直接I/O（Direct IO）概念：
+
+- **传统I/O**：当应用程序请求读或写磁盘时，操作系统会将数据缓存到内存中。这意味着后续相同数据的访问会更快，因为它们已经存在于内存中。然而，内存管理和缓存机制会消耗一定的系统资源和时间。
+- **Direct IO**：在使用直接I/O时，数据直接从磁盘读取到应用程序提供的内存缓冲区（或者反过来写入磁盘）。操作系统的文件系统缓存被绕过。这意味着数据不会被存储在操作系统的页缓存中，也就减少了内存使用和操作系统缓存管理的开销。
+
+## 实验命令
+
+```
+--memory_size=16777216  一张SSTable64MB
+
 ```
 
